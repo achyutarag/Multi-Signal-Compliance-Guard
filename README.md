@@ -37,6 +37,34 @@ The precedent classifier trains automatically at startup from `output.csv`
 (the fit split only — held-out and adversarial rows are never used for
 training or threshold selection).
 
+## Reproducibility Notes
+
+Synthetic dataset generation (notebook Appendix) is optional to run.
+This section calls the Openai API to generate candidate evaluation
+examples and requires your own OPENAI_API_KEY. You do not need to run
+it: the dataset it produces, output.csv, is already included in this
+repo, hand-verified and ready to use. Every downstream cell (v0–v10,
+bootstrap significance testing, results tables) reads from output.csv
+directly and does not depend on the generation cell having been executed.
+If you don't have an API key, skip that section entirely — the notebook
+still runs top-to-bottom without it.
+
+Getting output.csv into your environment.
+
+
+Cloning this repo (git clone <repo-url>) or opening the notebook
+via Colab's File → Open notebook → GitHub option: output.csv is
+already present alongside the notebook — no extra steps needed.
+Running the notebook standalone (e.g., you downloaded only the
+.ipynb file, not the full repo): upload output.csv manually before
+running the evaluation cells:
+
+```python  from google.colab import files
+  files.upload()  # select output.csv when prompted
+```
+
+
+
 ## Architecture
 
 Each (policy, response) pair is evaluated through five priority-ordered
