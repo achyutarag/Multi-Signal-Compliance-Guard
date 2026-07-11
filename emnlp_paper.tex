@@ -1,0 +1,433 @@
+% ============================================================
+% Paper draft for EMNLP 2026 System Demonstrations track.
+%
+% SETUP INSTRUCTIONS:
+% 1. Download the official style files from:
+%    https://github.com/acl-org/acl-style-files
+%    (acl.sty, acl_natbib.bst, anthology.bib.txt -> anthology.bib)
+% 2. Place this file (rename to e.g. paper.tex) in the same folder
+%    as acl.sty.
+% 3. Compile with pdflatex (recommended) + bibtex/biber.
+% 4. Before final/camera-ready submission, change [review] to [final]
+%    in the \usepackage line below (kept as [review] here since the
+%    venue is single-blind and self-references are allowed, but the
+%    "review" option controls page-numbering/anonymity formatting,
+%    not blinding -- follow the venue's current instructions at
+%    submission time).
+% 5. Fill in REAL author names/affiliations/emails before submitting.
+% 6. Fill in the actual license, live demo URL, and video URL in the
+%    marked TODO locations before submitting -- these are STRICT,
+%    ENFORCED requirements; the submission will be desk rejected
+%    without them.
+% ============================================================
+
+\documentclass[11pt]{article}
+\usepackage[preprint]{acl}
+\usepackage{times}
+\usepackage{latexsym}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{microtype}
+\usepackage{inconsolata}
+\usepackage{graphicx}
+\usepackage{booktabs}
+
+\title{A Multi-Signal Compliance Audit Pipeline for RAG Systems: \\
+Combining NLI, Topical Similarity, and a Supervised Precedent Classifier}
+
+% TODO: replace with real author names, affiliations, and emails.
+% Reviewing is single-blind this year -- no anonymization needed.
+\author{
+Achyuta Raghunathan \\
+UC Irvine\\
+\texttt{achyutarag@gmail.com} \\
+}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Compliance-answering systems built on retrieval-augmented generation (RAG)
+are commonly audited with a single metric -- embedding cosine similarity or
+natural language inference (NLI) argmax -- both of which have demonstrable
+blind spots. Cosine similarity cannot detect a single inverted word (e.g.,
+``waived'' vs.\ ``applied''), since the two sentences remain nearly identical
+in vector space; NLI argmax collapses to ``compliant'' on any high-neutral
+response, including evasive deflection and precedent-based policy
+circumvention that never explicitly contradicts the source text. We present
+a multi-signal audit pipeline that combines NLI entailment/contradiction
+scoring, topical embedding similarity, and a small supervised classifier
+targeting precedent/exception framing -- a failure mode we show neither NLI
+nor similarity can resolve on its own. We report a fit/held-out/adversarial
+evaluation protocol designed to prevent circular self-evaluation, and
+document two discarded signal designs (a repurposed NLI probe and a
+zero-shot classifier) alongside the working supervised approach, since the
+negative results are informative about the failure modes of each technique.
+The final system achieves 93.6\% accuracy (95\% CI [88.3\%, 98.7\%]) on
+held-out and adversarial data, versus a 59.8\% naive NLI-argmax baseline
+($p < 0.001$), with zero false positives and a documented, bounded set of
+remaining false negatives.
+\end{abstract}
+
+\begin{center}
+\small
+\textbf{Links:} \; Code: \url{https://github.com/achyutarag/Multi-Signal-Compliance-Guard} \; $\vert$ \; Live Demo:
+\url{https://multi-signal-compliance-guard-qq3xu59gdprwtww69gcrsh.streamlit.app/ } \; $\vert$ \; Video:
+\url{https://www.loom.com/share/41b4122f9b3a46db84993814eded8a43}
+\end{center}
+
+\vspace{0.5em}
+% NOTE: fill in the three URLs above as soon as each is available --
+% repo can go in as soon as you push it (even before the demo/video are
+% ready), so this line does not need to wait on the other two.
+
+\section{Introduction}
+\label{sec:intro}
+
+\paragraph{Problem.} RAG and compliance-answering systems are commonly
+audited with a single metric. In a regulated setting (banking, insurance,
+healthcare), an approved answer that silently violates policy is a direct
+compliance and liability exposure. We identify and evaluate against three
+distinct failure modes that a single-metric audit misses: (1) direct
+contradiction or inversion of policy content, (2) topic drift, in which a
+response deflects onto an unrelated subject without confirming or denying
+compliance, and (3) precedent framing, in which a response invokes
+discretion, exception, or informal past practice to justify circumventing a
+policy without directly contradicting its wording.
+
+\paragraph{Importance and impact.} Compliance failures of type (2) and (3)
+are, by construction, difficult for a human skimming a transcript to catch,
+since the response never states an outright violation. An automated system
+that can flag these cases for review has direct value for any organization
+deploying RAG chatbots in a regulated domain.
+
+\paragraph{Novelty.} Our contribution is not a single new model but a
+\textbf{documented multi-signal decision procedure}, built through a
+transparent, reproducible failure-mode taxonomy, together with a
+fit/held-out/adversarial evaluation protocol that catches circular
+self-evaluation before it reaches a significance claim. We report two
+discarded signal designs (Sections~\ref{sec:v7}--\ref{sec:v8}) alongside the
+working design (Section~\ref{sec:v9}), since we believe the negative results
+are independently useful to practitioners considering similar approaches.
+
+\paragraph{Target audience.} NLP engineers and applied researchers building
+compliance/QA layers on top of RAG chatbots in regulated industries (finance,
+insurance, healthcare, legal); researchers interested in evaluation
+methodology for high-neutral NLI failure modes.
+
+\section{Related Work / Comparison to Existing Approaches}
+\label{sec:related}
+
+\textbf{Cosine-similarity-only audits}, common in production RAG monitoring,
+fail on negation and inversion, since semantically opposite statements about
+the same entity can remain nearly identical in embedding space.
+
+\textbf{NLI-argmax-only audits} fail on high-neutral evasive or
+precedent-framing language: when a cross-encoder's neutral class dominates
+the softmax output, an argmax decision rule maps the response to
+``compliant'' by construction, regardless of whether the response is
+evasive or discretion-invoking (Section~\ref{sec:v0}).
+
+\textbf{Keyword/regex-based compliance filters}, common in legacy rule
+engines, are shown directly in our evaluation (Section~\ref{sec:v3}) to be
+actively harmful on adversarial phrasing: a hand-built list of trigger words
+(``historically'', ``discretionary'', etc.) produced a $-68\%$ accuracy
+delta versus a naive baseline on adversarial inputs specifically constructed
+to contain those words while remaining policy-compliant.
+
+\section{System Description}
+\label{sec:system}
+
+\subsection{Architecture}
+
+The final system (v10) evaluates each (policy, response) pair through a
+priority-ordered gate sequence, computing all signals unconditionally and
+resolving the verdict via the first gate that fires:
+
+\begin{enumerate}
+\item \textbf{Direct contradiction gate.} If the NLI cross-encoder's
+contradiction probability exceeds 0.35, the response is flagged as a
+violation.
+\item \textbf{Background-leak gate.} Within the high-neutral zone
+(neutral probability $> 0.70$), if contradiction still exceeds 0.15, the
+response is flagged.
+\item \textbf{Precedent classifier gate.} A supervised logistic regression
+classifier, trained on response embeddings and the (response $-$ policy)
+embedding difference, flags responses whose predicted probability of
+invoking precedent/exception framing exceeds 0.50.
+\item \textbf{Topical similarity gate.} If the response's cosine similarity
+to the policy text falls below a calibrated threshold (0.42), it is flagged
+as topic drift.
+\item \textbf{Direct margin fallback.} Outside the high-neutral zone, the
+entailment$-$contradiction margin determines the verdict.
+\end{enumerate}
+
+We use \texttt{cross-encoder/nli-deberta-v3-base} \citep{he2021deberta,he2021debertav3} for NLI scoring and \texttt{all-MiniLM-L6-v2} \citep{wang2020minilm,reimers-gurevych-2019-sentence} for embeddings, both via the
+\texttt{sentence-transformers} library \citep{reimers-gurevych-2019-sentence}, trained on the MultiNLI corpus \citep{williams-etal-2018-broad}.\footnote{Model cards:
+\url{https://huggingface.co/cross-encoder/nli-deberta-v3-base} and
+\url{https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2}.}
+
+\subsection{Why Two Signals Were Not Enough}
+\label{sec:whyneed3rd}
+
+An earlier version of the system (v6) used only the contradiction gate,
+similarity gate, and margin fallback. In a larger subsequent evaluation
+(Section~\ref{sec:v6limits}), this design caught only 19\% of precedent
+framing violations. We traced this to overlapping similarity ranges: missed
+violations had similarity scores of 0.432--0.675, directly overlapping with
+genuinely compliant responses at 0.503--0.711. No similarity threshold can
+separate these classes, because precedent-framing responses are, by
+construction, topically on-topic with the policy -- the same property that
+makes genuinely compliant paraphrases score highly. This motivated adding a
+signal targeting the \emph{rhetorical structure} of the response rather than
+its topical content (Sections~\ref{sec:v7}--\ref{sec:v9}).
+
+\section{Evaluation Methodology}
+\label{sec:eval-method}
+
+\subsection{Fit / Held-out / Adversarial Protocol}
+
+All thresholds and trained parameters are selected using only a \emph{fit}
+split. Reported accuracy and significance figures are computed exclusively
+on \emph{held-out} examples (same categories, unseen phrasing) and
+\emph{adversarial} examples (constructed specifically to contain surface
+features -- e.g., precedent-framing trigger words -- while having the
+opposite ground-truth label). This separation was introduced after an
+earlier design (Section~\ref{sec:v3}) achieved a spurious 100\% accuracy
+(zero-width bootstrap confidence interval) by using a keyword list built
+from reading the exact sentences it was later scored against.
+
+\subsection{Dataset}
+
+The evaluation dataset covers a single policy domain (a corporate
+gift-value policy) across five categories -- Safe, Direct Failure, Topic
+Drift, Precedent Framing, and Adversarial -- generated with LLM assistance
+and verified example-by-example by a human annotator prior to any use in
+threshold selection or training. Near-duplicate candidates (word-overlap
+$> 0.55$) were identified and removed prior to verification. The final
+dataset comprises 98 examples; further reduced to 93 after moving 5
+adversarial examples into the classifier's training split
+(Section~\ref{sec:v9}).
+
+\subsection{Statistical Testing}
+
+We report accuracy with 95\% confidence intervals from 1{,}000-iteration
+paired bootstrap resampling \citep{berg-kirkpatrick-etal-2012-empirical},
+and significance as the proportion of
+bootstrap resamples in which the multi-signal system did not outperform the
+naive baseline. We report per-category accuracy alongside all aggregate
+figures, since an aggregate figure can mask a category-level failure when
+categories are of unequal size and difficulty (Section~\ref{sec:v6limits}).
+
+\section{Results}
+\label{sec:results}
+
+\subsection{v0: Initial Design (Invalid Result)}
+\label{sec:v0}
+
+An initial gate design required elevated contradiction probability to flag
+drift, which genuinely evasive text does not exhibit (both entailment and
+contradiction are low when neutral dominates). This caused the system to be
+identical to the naive baseline on exactly the cases it was designed to
+catch, producing a deterministic zero accuracy delta across all bootstrap
+resamples ($p = 1.0000$) -- not evidence of no effect, but evidence of a
+logic error.
+
+\subsection{v3: Keyword Gate (Invalid Result)}
+\label{sec:v3}
+
+A subsequent design added a hand-built regular expression matching
+precedent-framing trigger words. Evaluated only on the examples used to
+build the word list, this achieved 100.00\% accuracy with a zero-width
+bootstrap confidence interval ($p = 0.0000$) -- a signature of circular
+evaluation rather than a genuine effect. Introducing held-out and
+adversarial splits (Section~\ref{sec:eval-method}) revealed the true
+behavior: the keyword gate produced a $-68.10\%$ accuracy delta versus
+baseline on adversarial inputs specifically constructed to contain trigger
+words in compliant contexts (e.g., ``we've traditionally reminded staff that
+gifts over \$50 are never permitted'').
+
+\subsection{v6: Similarity-Only Design, Limitations at Scale}
+\label{sec:v6limits}
+
+Table~\ref{tab:v6} shows the similarity-only design (contradiction gate +
+similarity gate + margin fallback, no precedent-specific signal) evaluated
+on a 98-example scaled dataset.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lrrr}
+\toprule
+\textbf{Category} & $n$ & Baseline & v6 Guard \\
+\midrule
+Safe               & 14 & 100.0\% & 100.0\% \\
+Direct Failure     & 16 & 100.0\% & 100.0\% \\
+Topic Drift        & 16 &   6.2\% &  93.8\% \\
+Precedent Framing  & 16 &   0.0\% &  \textbf{18.8\%} \\
+Adversarial        & 20 & 100.0\% &  70.0\% \\
+\midrule
+\textbf{Aggregate} & 82 &  62.3\% &  82.8\% \\
+\bottomrule
+\end{tabular}
+\caption{Similarity-only design (v6/v9-precursor) on the scaled dataset.
+Aggregate accuracy (82.8\%, $p<0.001$) masks near-total failure on
+Precedent Framing (18.8\%), the category the system was designed to
+address.}
+\label{tab:v6}
+\end{table}
+
+This result illustrates a general risk in evaluation reporting: the
+aggregate accuracy is statistically significant and numerically high, yet
+the category central to the system's stated purpose is functioning barely
+above the 0\% baseline. We report this explicitly rather than presenting
+only the aggregate figure.
+
+\subsection{v7: Repurposed NLI Probe (Discarded)}
+\label{sec:v7}
+
+We first attempted to address the precedent-framing gap by reusing the
+existing NLI cross-encoder as a second probe, testing entailment between
+the response and a synthetic claim describing the rhetorical move (``This
+response describes an exception, discretionary carve-out, informal past
+practice, or personal judgment call that deviates from the stated
+policy\ldots''). On the fit split, the best achievable threshold accuracy
+was 62.5\%, \emph{below} the 75\% majority-class baseline. Genuinely
+compliant examples scored 0.93--0.99, indistinguishable from actual
+violations. We attribute this to a distribution mismatch: NLI
+cross-encoders are trained on concrete premise/hypothesis pairs describing
+the same event or fact, not on judging abstract rhetorical categories.
+
+\subsection{v8: Zero-Shot Classification (Discarded)}
+\label{sec:v8}
+
+We next tried Hugging Face's zero-shot-classification pipeline
+(\texttt{facebook/bart-large-mnli} \citep{lewis-etal-2020-bart}), following the entailment-based zero-shot classification approach of \citet{yin-etal-2019-benchmarking}, with two mutually exclusive candidate labels. Fit-split accuracy exactly matched the 75\% majority-class
+baseline, with scores compressed into a narrow, largely undiscriminating
+band (0.659--0.996); compliant examples scored \emph{higher}
+(0.976--0.990) than some actual violations (0.659). This is consistent
+with known label-wording sensitivity in zero-shot MNLI classifiers.
+
+\subsection{v9/v10: Supervised Precedent Classifier (Final Design)}
+\label{sec:v9}
+
+Both v7 and v8 share a root cause: relying on a pretrained model's
+zero-shot judgment about an abstract category it was not trained to
+evaluate. We instead trained a small, heavily regularized logistic
+regression classifier \citep{pedregosa2011scikit} directly on fit-split examples, using response
+embeddings and the (response $-$ policy) embedding difference as features.
+
+An initial version (v9), trained only on Precedent Framing vs.\ Safe
+examples, achieved 89.2\% aggregate accuracy (95\% CI [81.7\%, 95.1\%]) on
+held-out and adversarial data ($n=82$), raising Precedent Framing accuracy
+from 0\% to 87.5\%. However, it introduced 6 new false positives, all in
+the Adversarial category, with scores of 0.501--0.510 -- directly on the
+decision boundary. The classifier had never seen a single Adversarial-class
+example during training, since that category was, by the original
+evaluation design, routed entirely to the held-out adversarial split.
+
+We corrected this (v10) by moving 5 Adversarial-category examples from the
+adversarial split into the fit split and retraining on all three relevant
+classes. Table~\ref{tab:final} reports the final result.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lrrr}
+\toprule
+\textbf{Category} & $n$ & Baseline & v10 Guard \\
+\midrule
+Safe               & 14 & 100.0\% & 100.0\% \\
+Direct Failure     & 16 & 100.0\% & 100.0\% \\
+Topic Drift        & 16 &   6.2\% &  93.8\% \\
+Precedent Framing  & 16 &   0.0\% &  75.0\% \\
+Adversarial        & 15 & 100.0\% & 100.0\% \\
+\midrule
+\textbf{Aggregate} & 77 &  59.8\% &  \textbf{93.6\%} \\
+\bottomrule
+\end{tabular}
+\caption{Final system (v10) on held-out + adversarial data. 95\% CI
+[88.3\%, 98.7\%] vs.\ baseline [49.4\%, 71.4\%], $p<0.001$. Zero false
+positives; four remaining Precedent Framing false negatives, all within
+0.03 of the decision boundary (0.467--0.498).}
+\label{tab:final}
+\end{table}
+
+We note explicitly that the improvement from v9 to v10 involved a
+disclosed trade-off: 2 correct Precedent Framing predictions were lost
+(14/16 $\rightarrow$ 12/16) in exchange for eliminating all 6 Adversarial
+false positives, and the Adversarial evaluation denominator shrank from 20
+to 15. We report per-category counts rather than only the aggregate
+percentage so this trade-off is independently verifiable.
+
+\section{Licensing}
+
+The evaluation code and pipeline are released under the MIT license. 
+Underlying models are used under their respective Apache-2.0 open 
+licenses: \texttt{cross-encoder/nli-deberta-v3-base} and 
+\texttt{all-MiniLM-L6-v2} (see model cards, footnote 1).
+
+
+\section*{Limitations}
+
+\textbf{Single policy domain.} All evaluation examples derive from a single
+gift-value policy. Generalization to other policy types (data handling,
+expense approval, conflict-of-interest disclosure) is untested.
+
+\textbf{Precedent-framing boundary calibration.} The four remaining false
+negatives sit within 0.03 of the classifier's decision boundary
+(0.467--0.498 vs.\ a 0.50 threshold), indicating a calibration gap rather
+than a distinct unaddressed failure pattern. A larger, more diverse fit set
+targeted at this boundary region is the most direct next step.
+
+\textbf{No user study.} Evaluation is against hand-verified synthetic
+examples, not real user or production traffic. Shadow-mode deployment
+against live data, with human review retained in the loop, is recommended
+before production use.
+
+\textbf{Small fit sets.} Per-category fit sets are small (4--8 examples) by
+design, to preserve held-out evaluation power. This is adequate for
+threshold and boundary selection in our experiments, but means any single
+mislabeled fit example has outsized influence; periodic re-auditing of
+fit-set labels is recommended for any deployment.
+
+\section*{Ethics Statement}
+
+This system is designed to \emph{flag} candidate compliance violations for
+human review, not to make unilateral compliance or disciplinary decisions.
+Given the documented false-negative rate on precedent-framing language
+(Table~\ref{tab:final}), we recommend deployments retain mandatory human
+review for any flagged or borderline case, particularly in the 0.4--0.6
+precedent-classifier score range where the model's confidence is lowest.
+We used LLM-assisted generation for a portion of the evaluation dataset;
+all generated examples were individually hand-verified for label accuracy
+prior to any use in threshold selection, training, or reported evaluation,
+to avoid circular or fabricated evaluation claims.
+
+% ------------------------------------------------------------
+% Add real \citep{}/\citet{} references as needed, e.g. for
+% He et al. 2021 (DeBERTa), Reimers and Gurevych 2019
+% (Sentence-BERT), Wang et al. 2020 (MiniLM), Lewis et al. 2020
+% (BART). Populate custom.bib with verified BibTeX entries for
+% any works you cite -- do not rely on this draft for exact
+% bibliographic metadata.
+% ------------------------------------------------------------
+\bibliography{custom}
+
+\appendix
+
+\section{Dataset Generation and Hand-Verification Protocol}
+\label{sec:appendix-gen}
+
+Candidate examples were generated via LLM assistance, with category-specific
+prompts targeting each of the five evaluation categories, in batches of 10
+with a deduplication pass (word-overlap threshold 0.9) applied within and
+across batches. All candidates were written to a review file containing the
+proposed text, category, and proposed label, with \texttt{verified\_label},
+\texttt{keep}, and \texttt{split} fields left blank. A human reviewer read
+every candidate and populated these fields; the loading function used for
+all downstream evaluation raises an error on any row missing a valid label
+or split assignment, preventing an unreviewed file from silently entering
+the evaluation pipeline.
+
+\end{document}
