@@ -11,8 +11,6 @@ precedent/exception framing (e.g., "historically, we've allowed
 exceptions...") — a failure mode neither signal alone can resolve.
 
 **Live demo:** [https://multi-signal-compliance-guard-qq3xu59gdprwtww69gcrsh.streamlit.app/]
-**Paper:** [TODO: link once available, e.g. OpenReview / ACL Anthology]
-**Video:** [TODO: Loom/YouTube link]
 
 ## What's in this repo
 
