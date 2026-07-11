@@ -81,7 +81,7 @@ gates:
 
 Full rationale, including two failed signal designs (a repurposed NLI probe
 and zero-shot classification) that motivated the final supervised-classifier
-approach, is documented in `multi-signal compliance guard.ipynb`
+approach, is documented in `solutions_final.ipynb`
 
 ## Results
 
