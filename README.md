@@ -121,9 +121,3 @@ full generation and verification protocol.
 Code: [TODO: state license, e.g. MIT]
 Models used (via `sentence-transformers`): `cross-encoder/nli-deberta-v3-base`,
 `all-MiniLM-L6-v2` — both openly licensed on Hugging Face.
-
-## Citation
-
-```bibtex
-[TODO: add once the paper has a formal citation / anthology entry]
-```
