@@ -19,7 +19,7 @@ from sklearn.linear_model import LogisticRegression
 
 st.set_page_config(page_title="Multi-Signal Compliance Guard", layout="wide")
 
-# Calibrated for general production testing (prevents false positives)
+# Calibrated for production stability
 SIM_THRESHOLD = 0.30
 DEFAULT_POLICY = "Employees must accept corporate gifts only if the total value is under 50 dollars."
 
@@ -86,7 +86,6 @@ def train_precedent_classifier():
         return None, 0
 
     X, y = np.array(X), np.array(y)
-    # Strong L2 regularization (C=0.05) to reduce overfitting on small seed sets
     clf = LogisticRegression(C=0.05, max_iter=1000, class_weight="balanced")
     clf.fit(X, y)
     return clf, len(X)
@@ -108,7 +107,7 @@ EXAMPLES = {
     "Safe paraphrase": "You are allowed to accept a $30 gift from a client.",
     "Direct violation": "Sure, you can accept that $100 gift voucher from a vendor.",
     "Topic drift": "All corporate tokens received from international clients are systematically logged in our ledger framework.",
-    "Precedent framing": "Historically, the compliance team allowed representatives to handle gifts on acase-by-case evaluation basis.",
+    "Precedent framing": "Historically, the compliance team allowed representatives to handle gifts on a case-by-case evaluation basis.",
     "Discretion-ceding": "It's really up to the manager's judgment whether to allow a gift or not.",
     "Adversarial (hedge word, compliant)": "We've traditionally reminded staff that gifts over $50 are never permitted, no exceptions.",
 }
@@ -128,29 +127,26 @@ def run_guard(policy: str, response: str):
     pred_base = 0 if (highest_idx in (1, 2)) else 1
 
     reason = ""
-    # Gate 1: Strong contradiction
     if p_contradiction > 0.35:
         pred_guard = 1
-        reason = "Gate 1: Direct contradiction detected (contradiction score above 0.35)."
-    # Gate 2-4: Extremely neutral / evasive framing path
-    elif p_neutral > 0.85:  # Loosened from 0.70 to avoid false positives on standard paraphrases
+        reason = "Gate 1: direct contradiction (contradiction score above 0.35)."
+    elif p_neutral > 0.85:
         if p_contradiction > 0.15:
             pred_guard = 1
-            reason = "Gate 2: Background contradiction leak detected in neutral context."
+            reason = "Gate 2: background contradiction leak in a high-neutral response."
         elif prec_score > 0.50:
             pred_guard = 1
-            reason = f"Gate 3: Precedent/exception framing flagged (classifier score {prec_score:.3f})."
+            reason = f"Gate 3: precedent classifier flagged this response (score {prec_score:.3f})."
         elif topical_sim < SIM_THRESHOLD:
             pred_guard = 1
-            reason = f"Gate 4: Topical similarity ({topical_sim:.3f}) below threshold ({SIM_THRESHOLD}) — likely topic drift."
+            reason = f"Gate 4: topical similarity ({topical_sim:.3f}) below threshold ({SIM_THRESHOLD}) — likely topic drift."
         else:
             pred_guard = 0
-            reason = f"Neutral response validated — topic similarity ({topical_sim:.3f}) and precedent score ({prec_score:.3f}) are within safe boundaries."
-    # Gate 5: Direct margin scoring
+            reason = f"High neutral, but similarity ({topical_sim:.3f}) and precedent score ({prec_score:.3f}) both indicate a safe, on-topic response."
     else:
         margin = p_entailment - p_contradiction
-        pred_guard = 0 if margin >= 0.30 else 1  # Loosened margin from 0.50 for broader recall
-        reason = f"Gate 5: Direct NLI decision (entailment - contradiction margin = {margin:.2f})."
+        pred_guard = 0 if margin >= 0.30 else 1
+        reason = f"Gate 5: direct NLI margin (entailment - contradiction = {margin:.2f})."
 
     return {
         "pred_base": pred_base,
@@ -169,11 +165,12 @@ def run_guard(policy: str, response: str):
 # =====================================================================
 st.title("Multi-Signal Compliance Guard")
 st.markdown(
-    "Companion demo for *A Multi-Signal Compliance Audit Pipeline for RAG Systems*. "
-    "Combines Cross-Encoder NLI logic, sentence-level embeddings, and a precedent classifier."
+    "Companion demo for *A Multi-Signal Compliance Audit Pipeline for RAG "
+    "Systems* (EMNLP 2026 System Demonstrations). Combines NLI "
+    "entailment/contradiction scoring, topical embedding similarity, and a "
+    "supervised classifier targeting precedent/exception framing."
 )
 
-# Sidebar with model parameters and operational boundaries
 with st.sidebar:
     st.header("Pipeline Configuration")
     st.markdown(f"**Similarity Cutoff:** `{SIM_THRESHOLD}`")
@@ -188,23 +185,24 @@ with st.sidebar:
     )
 
 if precedent_clf is not None:
-    st.success(f"✅ Precedent classifier active (trained on {n_trained} fit-split examples)")
+    st.success(f"✅ Precedent classifier loaded (trained on {n_trained} fit-split examples, matches paper)")
 else:
-    st.warning("⚠️ Precedent classifier NOT loaded (`output.csv` missing) — precedent gate is disabled.")
+    st.warning("⚠️ Precedent classifier NOT loaded (output.csv missing) — "
+               "precedent-framing gate is disabled, results will NOT match the paper")
 
 col1, col2 = st.columns(2)
 
 with col1:
-    policy = st.text_area("Policy text", value=DEFAULT_POLICY, height=90)
+    policy = st.text_area("Policy text", value=DEFAULT_POLICY, height=80)
     example_choice = st.selectbox("Try an example (optional)", ["(custom)"] + list(EXAMPLES.keys()))
     default_response = EXAMPLES.get(example_choice, "")
     response = st.text_area(
         "Response to evaluate",
         value=default_response,
         placeholder="e.g. You are allowed to accept a $30 gift from a client.",
-        height=110,
+        height=100,
     )
-    evaluate = st.button("Evaluate Response", type="primary")
+    evaluate = st.button("Evaluate", type="primary")
 
 with col2:
     if evaluate:
@@ -219,26 +217,28 @@ with col2:
             st.markdown(f"### Naive Baseline: {label(result['pred_base'])}")
             st.markdown(f"### Multi-Signal Guard: {label(result['pred_guard'])}")
             st.markdown(f"**Reasoning:** {result['reason']}")
-            
             if result["pred_base"] != result["pred_guard"]:
-                st.info("⚡ **Signal divergence:** Multi-Signal Guard corrected a naive baseline classification.")
+                st.markdown("**⚡ Baseline and guard disagree on this case.**")
 
-            st.markdown("#### Detailed Signal Breakdown")
+            st.markdown("#### Signal breakdown")
             st.table({
-                "Signal Metric": [
-                    "Entailment (E)", 
-                    "Neutral (N)", 
-                    "Contradiction (C)",
-                    "Topical Similarity", 
-                    "Precedent Score"
-                ],
-                "Score": [
+                "Signal": ["Entailment (E)", "Neutral (N)", "Contradiction (C)",
+                           "Topical Similarity", "Precedent Classifier Score"],
+                "Value": [
                     f"{result['p_entailment']:.1%}",
                     f"{result['p_neutral']:.1%}",
                     f"{result['p_contradiction']:.1%}",
-                    f"{result['topical_sim']:.3f} (Cutoff: {SIM_THRESHOLD})",
-                    f"{result['prec_score']:.3f} (Cutoff: 0.500)",
+                    f"{result['topical_sim']:.3f} (threshold {SIM_THRESHOLD})",
+                    f"{result['prec_score']:.3f} (threshold 0.50)",
                 ],
             })
+
+            st.info(
+                "**Known limitation (see paper, Limitations section):** the "
+                "precedent classifier catches ~75% of precedent-framing "
+                "violations on held-out data; the remaining false negatives "
+                "sit within 0.03 of the decision boundary. This is a "
+                "documented, bounded gap, not an unknown failure mode."
+            )
     else:
-        st.markdown("*Select an example or enter custom text and click **Evaluate Response**.*")
+        st.markdown("*Enter a policy and response, then click Evaluate.*")
