@@ -113,9 +113,3 @@ was introduced specifically to prevent that from happening again.
 Evaluation examples were generated with LLM assistance and individually
 hand-verified before use. See `solutions_final.ipynb`, Appendix, for the
 full generation and verification protocol.
-
-## Licensing
-
-Code: [TODO: state license, e.g. MIT]
-Models used (via `sentence-transformers`): `cross-encoder/nli-deberta-v3-base`,
-`all-MiniLM-L6-v2` — both openly licensed on Hugging Face.
